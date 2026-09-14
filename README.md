@@ -44,6 +44,7 @@ slightly differently from mine.
 - [8. Unlocking all 40 CUs](#8-unlocking-all-40-cus)
 - [9. Thermal tuning](#9-thermal-tuning)
 - [10. Running more than one board](#10-running-more-than-one-board)
+- [11. Benchmarks — two-board layer split](#11-benchmarks--two-board-layer-split)
 - [Troubleshooting](#troubleshooting)
 - [The build](#the-build)
 - [Credits](#credits)
@@ -524,6 +525,100 @@ use and let it load-balance.
 ```
 
 This is what `-DGGML_RPC=ON` in section 6 was for.
+[Section 11](#11-benchmarks--two-board-layer-split) has measured numbers for
+the layer-split mode, including how it compares against a single board.
+
+---
+
+## 11. Benchmarks — two-board layer split
+
+Measured 2026-09-14 with `llama.cpp` (Vulkan + RPC), model
+`unsloth/Qwen3.8-27B-GGUF`, both boards with the 40 CU unlock applied and the
+governor at max 1900 MHz / 88 °C.
+
+| | Head node | Worker node |
+|---|---|---|
+| Role | `llama-server` | `ggml-rpc-server -c` |
+| RAM | 14693 MB | 14694 MB |
+| GTT | 14 GiB (`ttm.pages_limit=3670016`) | 14 GiB |
+
+Interconnect: 2.5 GbE.
+
+### Method
+
+The same Java code-review prompt on every run — 875 tokens in (833 on the
+Q4/32k run), a fixed 3000 tokens out, `-ngl 999 --parallel 1 --no-mmproj`, and
+KV cache at `q8_0` except where noted.
+
+Two generation figures are reported, because they differ and the gap is the
+interesting part. **Average** is `eval time` over the full 3000 tokens.
+**First 100** is the instantaneous rate at token 100 — it always starts higher
+and decays as the context fills.
+
+### Results
+
+| Config | Prompt eval | Gen (avg) | Gen (first 100) | Total | Free RAM on head |
+|---|---|---|---|---|---|
+| **Q4_K_M, 32k ctx** (split) | 72.6 t/s | **16.18 t/s** | 17.75 t/s | 3m17s | **4.3 GB** |
+| Q4_K_M, 64k ctx (split) | 75.8 t/s | 15.55 t/s | 17.42 t/s | 3m24s | 3.2 GB |
+| Q5_K_XL, 32k ctx (split) | 72.6 t/s | 13.41 t/s | 15.03 t/s | 3m56s | 2.0 GB |
+| Q5_K_XL, 64k ctx, KV q8 (split) | 71.5 t/s | 13.23 t/s | 15.05 t/s | 3m59s | 0.9 GB |
+| Q5_K_XL, 64k ctx, KV q4 (split) | 71.0 t/s | 13.80 t/s | 15.25 t/s | 3m50s | 1.4 GB |
+| Q3_K_XL, 8k ctx (**single node**) | **80.9 t/s** | 14.65 t/s | **18.96 t/s** | 3m35s | 0.9 GB |
+
+GTT used across the split:
+
+| Config | Head | Worker | Total |
+|---|---|---|---|
+| Q4_K_M, 32k | 8.9 GiB | 7.2 GiB | 16.1 GiB |
+| Q5_K_XL, 32k | 11.2 GiB | ~8.9 GiB | ~20 GiB |
+
+The head always holds more: on top of its share of layers it carries the KV
+cache and the context buffers.
+
+### What the numbers show
+
+**Quantisation dominates; context size barely registers.** Doubling 32k → 64k
+cost 3.9 % on Q4 and 1.3 % on Q5. Going Q4 → Q5 cost 17 %. That holds while the
+context is empty — the real decay shows up as it fills.
+
+**The network is not the bottleneck people expect.** This was the open question
+when the build went up, and the answer is: at 2.5 GbE, with a 27B model split
+by layer, the RPC round-trip is not what limits you. The quant is.
+
+**Prompt eval scales with prompt size.** Early runs with 66-token prompts
+managed 16–21 t/s. At 875 tokens it is 71–81 t/s. The per-round-trip overhead
+dilutes when there is more to process per trip, so short prompts make the
+split look far worse than it is.
+
+**KV cache at `q4_0` is nearly free.** 4 % faster (less data over the wire) and
+~400 MB back. Less than hoped, because with an empty context the cache is not
+populated yet — the saving grows in real use.
+
+**Splitting solved a memory problem without costing speed.** Note what the
+single-node row is and is not. It is **not** apples-to-apples, and is not meant
+to be: Q3_K_XL at 8k is roughly the largest this model gets on one board, and
+that board ends up with 0.9 GB free. So the comparison it supports is the one
+that actually matters — *split with the quant you want* versus *single node
+with the quant that fits*. On that comparison the split wins on both axes: a
+better quant, 4.3 GB of headroom, and a higher average generation rate.
+
+Single node still wins where the network is genuinely absent: best prompt eval
+(80.9 t/s) and the fastest first 100 tokens (18.96 t/s). It just cannot hold
+the configuration you want to run.
+
+### The operational choice
+
+The two candidates worth running are **Q4_K_M + 64k** (fastest, 3.2 GB free)
+and **Q5_K_XL + 32k** (better quant, 2.0 GB free).
+
+Anything under ~1.5 GB free on the head — Q5 + 64k, and the single-node Q3 —
+runs, but is not *operable*: a full context or one extra process on the box
+puts `llama-server` in front of the OOM killer.
+
+Choosing between the two is not a benchmark question. It comes down to answer
+quality on real code, which none of this measures. The signal to watch for is
+API hallucination — a method or annotation that does not exist in the library.
 
 ---
 
@@ -565,12 +660,14 @@ load is around 250 W. Size for the boards you plan to add, and remember the
 fans hang off the same supply — there is no PWM header, they run straight off
 a 12 V rail.
 
-**On the switch.** Managed 2.5 GbE matters more than it looks if you use the
-layer-split mode in [section 10](#10-running-more-than-one-board): in that mode
-activations cross the network between boards on every token, so the link sits
-in the critical path. For independent nodes each serving their own model, any
-gigabit switch is fine. The 10G SFP+ port is the uplink to the rest of the
-network, not something the boards themselves need.
+**On the switch.** In the layer-split mode of
+[section 10](#10-running-more-than-one-board) activations cross the network
+between boards on every token, so it is fair to assume the link matters.
+[Section 11](#11-benchmarks--two-board-layer-split) measures it, and the answer
+is that at 2.5 GbE it is **not** the bottleneck for a 27B model — the
+quantisation is. Worth knowing before you spend money on faster networking to
+fix a problem you do not have. The 10G SFP+ port here is the uplink to the rest
+of the network, not something the boards themselves need.
 
 ### Printed parts
 
