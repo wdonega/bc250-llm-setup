@@ -77,8 +77,9 @@ cd "$REPO_DIR"
 # --- build -----------------------------------------------------------------
 
 # GGML_VULKAN: the only usable acceleration path on this APU (no ROCm).
-# GGML_RPC:    lets this box act as an rpc-server backend so two BC-250s can
-#              split one model by layer. Cheap to enable, annoying to add later.
+# GGML_RPC:    builds ggml-rpc-server, so this box can act as a backend and
+#              let two BC-250s split one model by layer. Cheap now, a full
+#              rebuild later.
 [[ "$DO_CLEAN" -eq 1 ]] && { info "Removing build/"; rm -rf build; }
 
 info "Configuring"

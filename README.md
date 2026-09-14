@@ -315,7 +315,7 @@ Add to `GRUB_CMDLINE_LINUX_DEFAULT` in `/etc/default/grub`:
 ttm.pages_limit=3670016 ttm.page_pool_size=3670016
 ```
 
-`3670016 × 4 KiB = 14 GiB`, leaving ~2 GB for the OS on a 16 GB board. Then:
+`3670016 × 4 KiB = 14 GiB`. Then:
 
 ```bash
 sudo update-grub
@@ -338,6 +338,25 @@ cat /proc/cmdline | tr ' ' '\n' | grep ttm
 cat /sys/class/drm/card*/device/mem_info_gtt_total    # ~14 GiB
 ```
 
+### Why 14 GiB is safe on a board with ~14.7 GB of usable RAM
+
+After the 1 GB BIOS carve-out, `free -m` on these boards reports about
+**14693 MB total** — and the limit above is 14336 MiB. That looks like it
+leaves only ~350 MB for the OS, which would be absurd.
+
+It works because **`ttm.pages_limit` is a ceiling, not a reservation.** Nothing
+is allocated up front; the parameter only removes the kernel's artificial cap
+on how much system RAM the GPU is *allowed* to map. What actually constrains
+you is the real allocation — model weights plus KV cache — competing with the
+OS for the same pool.
+
+So do not size your model against this number. Size it against measured free
+RAM, which is the last column of
+[section 11](#11-benchmarks--two-board-layer-split). The short version from
+those runs: below roughly **1.5 GB free** a config runs but is not operable,
+because a full context or one extra process puts `llama-server` in front of the
+OOM killer.
+
 ---
 
 ## 6. Building llama.cpp
@@ -359,8 +378,9 @@ build into `/root`.
 group effective you will spend ten minutes compiling a perfectly good binary
 that then only ever finds `llvmpipe`.
 
-**Why `-DGGML_RPC=ON` even with one board:** it lets this machine act as an
-`rpc-server` backend so two boards can split one model by layer (section 10).
+**Why `-DGGML_RPC=ON` even with one board:** it builds `ggml-rpc-server`, so
+this machine can act as a backend for another board and split one model by
+layer (section 10).
 Turning it on later means a full rebuild — it costs nothing now.
 
 ### Get your baseline number
@@ -520,19 +540,43 @@ Two modes, not mutually exclusive:
 `llama-server`; put them behind whatever OpenAI-compatible router you already
 use and let it load-balance.
 
-**Layer split** — for a model larger than one board's memory:
+**Layer split** — for a model larger than one board's memory. The boards act
+as one node, each holding part of the layers.
 
 ```bash
 # on the worker
-./build/bin/rpc-server -H 0.0.0.0 -p 50052
+./build/bin/ggml-rpc-server --host 0.0.0.0 --port 50052 --cache
 
 # on the head node
-./build/bin/llama-server -m model.gguf --rpc <worker-ip>:50052 -ngl 999
+./build/bin/llama-server -hf <model> --rpc <worker-host>:50052 -ngl 999
 ```
 
+The binary is **`ggml-rpc-server`**, not `rpc-server` — older guides and
+earlier llama.cpp revisions use the shorter name and it no longer exists.
+Check `--help` if the flags below do not match your build.
+
+`--cache` enables the worker's local tensor cache. Without it the head re-sends
+its share of the model over the network on every restart, which turns a
+service restart into minutes of transfer.
+
+> ### ⚠️ The RPC port has no authentication
+> llama.cpp's RPC protocol has **no authentication and no input validation**.
+> Anything that can reach port 50052 can execute code on the worker, and the
+> command above binds it to `0.0.0.0` on purpose — the head has to reach it.
+> Keep it on an internal LAN, firewalled from everything else. Never route it
+> to the internet. `71-configure-worker.sh` in
+> [section 12](#12-running-it-as-a-service) installs it with `IPAddressAllow`
+> restricted to RFC1918 ranges as a backstop, but that is defence in depth,
+> not a substitute for not exposing the port.
+
 This is what `-DGGML_RPC=ON` in section 6 was for.
-[Section 11](#11-benchmarks--two-board-layer-split) has measured numbers for
-the layer-split mode, including how it compares against a single board.
+
+**Is the split worth the trouble?** Measured on these boards, yes, and not for
+the reason you would expect: splitting was *faster* than a single node
+(16.18 vs 14.65 t/s), because one board can only hold a smaller quant. The
+network is not the bottleneck. Numbers, memory distribution per board and the
+full comparison are in
+[section 11](#11-benchmarks--two-board-layer-split).
 
 ---
 
