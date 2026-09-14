@@ -45,6 +45,7 @@ slightly differently from mine.
 - [9. Thermal tuning](#9-thermal-tuning)
 - [10. Running more than one board](#10-running-more-than-one-board)
 - [11. Benchmarks — two-board layer split](#11-benchmarks--two-board-layer-split)
+- [12. Running it as a service](#12-running-it-as-a-service)
 - [Troubleshooting](#troubleshooting)
 - [The build](#the-build)
 - [Credits](#credits)
@@ -136,7 +137,12 @@ cd bc250-llm-setup
 | `40-llama-cpp.sh` | Build with Vulkan + RPC backends | user (**not** sudo) | — |
 | `50-governor.sh` | Clock/voltage governor + curve | `sudo` | — |
 | `60-unlock-40cu.sh` | Patch amdgpu to expose all 40 CUs | `sudo` | **reboot** |
+| `71-configure-worker.sh` | RPC worker as a systemd service | `sudo` | — |
+| `72-configure-head.sh` | API server as a systemd service | `sudo` | — |
 | `90-validate.sh` | Read-only: verify the whole stack | user | — |
+
+The `7x` pair is only for a **two-board setup**, and they run on different
+machines: `71` on the worker, `72` on the head. A single board needs neither.
 
 `_lib.sh` holds shared helpers and is sourced by the others.
 Set `ASSUME_YES=1` for unattended runs — but **not** on `60-unlock-40cu.sh`,
@@ -622,6 +628,68 @@ API hallucination — a method or annotation that does not exist in the library.
 
 ---
 
+## 12. Running it as a service
+
+Everything so far has been run by hand. To make it survive a reboot there are
+two systemd units, one per board.
+
+```bash
+# on the WORKER board, first
+sudo ./71-configure-worker.sh
+
+# on the HEAD board
+sudo ./72-configure-head.sh
+```
+
+Worker first. The head retries every 15s so the reverse order converges too —
+it just wastes a few minutes in restart loops.
+
+Both units are **templates**: `__USER__` and `__HOME__` are substituted at
+install time from the account you sudo from, so nothing is pinned to my
+username. Don't install the `.service` files by hand — the scripts render
+them, check that the binaries exist, that the `render`/`video` groups exist,
+and that the board really is a BC-250 before touching systemd.
+
+### What the units do beyond starting a process
+
+| Setting | Why |
+|---|---|
+| `OOMScoreAdjust=-500` | With ~3 GB free the server is the box's largest process and the OOM killer's natural first pick. This makes the kernel take something else. |
+| `TimeoutStartSec=900` | First load pushes half the tensors over the network — minutes, not seconds. The default timeout would kill it mid-load. |
+| `Restart=always` + `RestartSec=15` | Covers the worker not being up yet, with no cross-host dependency to declare. |
+| `ProtectSystem=strict`, `ProtectHome=read-only` | Confines the process; `ReadWritePaths` opens only the two cache directories it actually writes. |
+| `DeviceAllow=/dev/dri rw`, `SupplementaryGroups=render video` | Without both, the hardening above takes the GPU away and you are silently back on llvmpipe. |
+| `--cache` on the worker | Local tensor cache, so the head doesn't re-send the model on every restart. |
+
+### Tuning without editing the unit
+
+Model, context size, KV cache type and worker address live in
+`/etc/default/llama-server`:
+
+```bash
+sudoedit /etc/default/llama-server
+sudo systemctl restart llama-server
+```
+
+`72-configure-head.sh` installs that file **once** and never overwrites it, so
+a re-run can't silently change what you're serving. Its comments carry the
+measured combinations from
+[section 11](#11-benchmarks--two-board-layer-split) next to their memory
+headroom — which is the number that decides whether a config is operable, not
+the throughput.
+
+### ⚠️ The RPC port is not safe to expose
+
+llama.cpp's RPC protocol has **no authentication and no input validation**.
+Anything that can reach port 50052 can execute code on the worker. The unit
+sets `IPAddressAllow` to the RFC1918 ranges as a backstop, but treat that as
+defence in depth, not as permission to route the port somewhere.
+
+The API on `:8080` binds to `0.0.0.0` so other machines can use it. Put it
+behind whatever you normally use for that, and keep it off the internet.
+
+---
+
 ## Troubleshooting
 
 If you cloned this repo, `./90-validate.sh` checks everything below in one pass
@@ -640,6 +708,10 @@ and exits with the number of failures.
 | GTT far smaller than 14 GiB | `ttm.*` missing from `/proc/cmdline`, or no reboot yet |
 | Random hangs / corrupt output after unlock | Possibly defective CUs — re-check the harvest map |
 | Instability under load, no thermal cause | IOMMU still enabled in the BIOS |
+| `llama-server` restart-loops every 15s | Worker not up — run `71-configure-worker.sh` on the other board |
+| Service dies with `203/EXEC` | Built without `-DGGML_RPC=ON`, so there is no `ggml-rpc-server` binary |
+| Service runs but inference is slow | Hardening took the GPU — check `DeviceAllow` / `SupplementaryGroups` survived your edits |
+| `llama-server` OOM-killed on long runs | Under ~1.5 GB free. Drop the quant or the context |
 
 ---
 

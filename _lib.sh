@@ -35,7 +35,9 @@ and running as root would put everything in /root owned by root."
 }
 
 # The login user, whether or not we were invoked through sudo.
-target_user() { echo "${SUDO_USER:-$USER}"; }
+# $USER is not guaranteed to exist (cron, systemd, a bare container shell) and
+# under `set -u` referencing it unset aborts the script, so fall back to id.
+target_user() { echo "${SUDO_USER:-${USER:-$(id -un)}}"; }
 
 # --- confirmation ----------------------------------------------------------
 

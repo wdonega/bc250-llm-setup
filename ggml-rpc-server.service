@@ -1,0 +1,49 @@
+# ggml-rpc-server.service — llama.cpp RPC worker on a BC-250
+#
+# TEMPLATE: __USER__ and __HOME__ are substituted at install time by
+# 71-configure-worker.sh. Do not install this file by hand.
+
+[Unit]
+Description=llama.cpp RPC worker (BC-250 Vulkan backend)
+Documentation=https://github.com/ggml-org/llama.cpp/tree/master/tools/rpc
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__/llama.cpp
+
+# --cache enables the local tensor cache, so the head does not re-send the
+# whole model over the network on every restart.
+ExecStart=__HOME__/llama.cpp/build/bin/ggml-rpc-server \
+    --host 0.0.0.0 \
+    --port 50052 \
+    --cache
+
+Restart=always
+RestartSec=5
+
+# If memory gets tight the kernel should kill something else first: losing the
+# worker breaks inference entirely, not just one local task.
+OOMScoreAdjust=-500
+
+# llama.cpp's RPC protocol has NO authentication and NO input validation.
+# Whoever reaches port 50052 executes code on this machine. Keep it on the
+# internal LAN behind a firewall; never expose it.
+IPAddressAllow=192.168.0.0/16 10.0.0.0/8 172.16.0.0/12 localhost
+IPAddressDeny=any
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__HOME__/.cache/llama.cpp
+
+# The GPU must stay reachable despite ProtectSystem=strict.
+DeviceAllow=/dev/dri rw
+SupplementaryGroups=render video
+
+[Install]
+WantedBy=multi-user.target

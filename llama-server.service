@@ -1,0 +1,60 @@
+# llama-server.service — llama.cpp API server on the head BC-250
+#
+# TEMPLATE: __USER__ and __HOME__ are substituted at install time by
+# 72-configure-head.sh. Do not install this file by hand.
+
+[Unit]
+Description=llama.cpp server (layer-split across two BC-250 boards over RPC)
+Documentation=https://github.com/ggml-org/llama.cpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__HOME__/llama.cpp
+
+# Quant, context size and worker address live in the EnvironmentFile so you
+# can switch configuration without editing this unit — see llama-server.env.
+EnvironmentFile=/etc/default/llama-server
+
+ExecStart=__HOME__/llama.cpp/build/bin/llama-server \
+    -hf ${LLAMA_MODEL} \
+    --rpc ${LLAMA_RPC_WORKER} \
+    -ngl 999 \
+    --ctx-size ${LLAMA_CTX_SIZE} \
+    --parallel 1 \
+    --cache-type-k ${LLAMA_CACHE_TYPE} \
+    --cache-type-v ${LLAMA_CACHE_TYPE} \
+    --host 0.0.0.0 \
+    --port 8080 \
+    --alias ${LLAMA_ALIAS} \
+    --no-mmproj
+
+# The worker may not be ready when this unit starts (both boards booting at
+# once). Restart=always plus RestartSec handles it without needing a
+# cross-host dependency.
+Restart=always
+RestartSec=15
+
+# Loading takes minutes: the split has to push half the tensors over the
+# network the first time.
+TimeoutStartSec=900
+TimeoutStopSec=60
+
+# With ~3 GB free this is the largest process on the box and therefore the
+# OOM killer's natural target. Prefer losing anything else over inference.
+OOMScoreAdjust=-500
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__HOME__/.cache/huggingface __HOME__/.cache/llama.cpp
+
+DeviceAllow=/dev/dri rw
+SupplementaryGroups=render video
+
+[Install]
+WantedBy=multi-user.target
