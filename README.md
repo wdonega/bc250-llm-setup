@@ -45,6 +45,7 @@ slightly differently from mine.
 - [9. Thermal tuning](#9-thermal-tuning)
 - [10. Running more than one board](#10-running-more-than-one-board)
 - [Troubleshooting](#troubleshooting)
+- [The build](#the-build)
 - [Credits](#credits)
 
 ---
@@ -198,7 +199,10 @@ what exposes the airflow problem.** Expect to do both.
 2. **Repaste.** Factory paste on a refurbished mining board is reliably dried
    out. This is not optional maintenance.
 3. **Thin out the central/upper fins.** They are press-fit: pull them **one at
-   a time, near the base**, with your fingers or needle-nose pliers.
+   a time, near the base**. There is a purpose-made printed tool for exactly
+   this — [BC-250 Scooper](https://www.printables.com/model/1282906-bc-250-scooper)
+   — which grips near the base and spreads the load better than pliers do.
+   Needle-nose pliers work too, they are just easier to slip with.
    - ⚠️ **Never with a Dremel, saw, or anything that produces swarf.**
      Aluminium filings on a populated board are a short circuit.
    - ⚠️ **Never with the heatsink still mounted on the board.**
@@ -541,6 +545,62 @@ and exits with the number of failures.
 | GTT far smaller than 14 GiB | `ttm.*` missing from `/proc/cmdline`, or no reboot yet |
 | Random hangs / corrupt output after unlock | Possibly defective CUs — re-check the harvest map |
 | Instability under load, no thermal cause | IOMMU still enabled in the BIOS |
+
+---
+
+## The build
+
+### Hardware
+
+| Item | Used here | Notes |
+|---|---|---|
+| **Boards** | 2x AMD BC-250 | Section 10 covers running them together |
+| **PSU** | MSI 650 W (ATX) | See below |
+| **Switch** | KeepLiNK managed 2.5G — 8x 2.5 GbE + 1x 10G SFP+ | See below |
+| **Fans** | 2x 120 mm per board | Wired straight to the PSU — [section 2](#2-cooling) |
+
+**On the PSU.** 650 W is comfortable headroom, not a requirement: two boards
+draw roughly 125 W each with all 40 CUs active (95 W at 24), so the compute
+load is around 250 W. Size for the boards you plan to add, and remember the
+fans hang off the same supply — there is no PWM header, they run straight off
+a 12 V rail.
+
+**On the switch.** Managed 2.5 GbE matters more than it looks if you use the
+layer-split mode in [section 10](#10-running-more-than-one-board): in that mode
+activations cross the network between boards on every token, so the link sits
+in the critical path. For independent nodes each serving their own model, any
+gigabit switch is fine. The 10G SFP+ port is the uplink to the rest of the
+network, not something the boards themselves need.
+
+### Printed parts
+
+The chassis in the photos is 3D printed. **[`models.3mf`](models.3mf)** in this
+repo is the full project as sliced — 14 plates, Creality Print — containing
+every part used:
+
+| Part | Purpose |
+|---|---|
+| `10InchRackGenerator.stl`, `Rack Edge`, `Top Front Edge`, `Left Handle`, `Right Front Foot` | The 5U 10-inch rack frame |
+| `atx top support`, `laterais maiores`, `borda` | Board support and side panels |
+| `honeycomb_plate.stl`, `honeycomb_plate_fanmount.stl` | Honeycomb side panel and its fan mount |
+| `capa fonte` | PSU cover |
+| `io-shield.stl` | I/O shield |
+| `tampa lcd` | Covers for the two status displays |
+
+### Source models
+
+These are other people's designs. Follow the links — each remains under its
+author's own license and terms.
+
+| Model | Author's page | Used |
+|---|---|---|
+| **Mini Lab RAX 5 — 5U server rack** | [MakerWorld](https://makerworld.com/en/models/2499872-mini-lab-rax-5-server-rack-5u#profileId-2748006) | **Adapted** — the rack was modified to fit this build |
+| **BC-250 to ATX case adapter** (board mount + front panel) | [Printables](https://www.printables.com/model/1743485-bc250-to-atx-case-adapter) | Unmodified |
+| **2HE 10-inch rack mount for mini-ITX / ATX PSU** (hangs the mount in the rack) | [MakerWorld](https://makerworld.com/en/models/1360827-2he-10-inch-rack-mount-mini-itx-atx-psu#profileId-1405438) | Unmodified |
+| **BC-250 Scooper** (tool for removing heatsink fins) | [Printables](https://www.printables.com/model/1282906-bc-250-scooper) | Unmodified — see [section 2](#2-cooling) |
+
+The scooper is a *tool*, not a chassis part — it is not in `models.3mf`, print
+it separately from the link above.
 
 ---
 
