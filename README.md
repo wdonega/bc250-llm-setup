@@ -17,6 +17,18 @@ slightly differently from mine.
 
 ---
 
+<p align="center">
+  <img src="img1.png" alt="Two BC-250 boards in a custom enclosure" width="45%">
+  <img src="img2.png" alt="The same build from the side" width="45%">
+</p>
+
+<p align="center">
+  <em>Two BC-250 boards in a 3D-printed chassis, each with a status display,
+  behind a 2.5G switch. This is what the guide below produces.</em>
+</p>
+
+---
+
 ## Table of contents
 
 - [What you are working with](#what-you-are-working-with)
